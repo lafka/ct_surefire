@@ -62,26 +62,25 @@ find_latest_rundir(Dir) ->
     hd(lists:reverse(lists:sort(Dirs))).
 
 available_reports(Dir) ->
-    Apps = [string:substr(A, 6) || A <- filelib:wildcard("apps.*", Dir)],
-    Dirs = filelib:wildcard(filename:join([Dir, "apps.*", "run.201*"])),
+    Apps = [string:substr(A, 5) || A <- filelib:wildcard("{apps,src}.*", Dir)],
+    Dirs = filelib:wildcard(filename:join([Dir, "{apps,src}.*", "run.*"])),
     lists:zip(Apps, Dirs).
 
 write_report(ReportDir, App, OutputFilename) ->
     LogFilename = filename:join(ReportDir, "suite.log.html"),
     Results = parse_results(LogFilename),
+	io:format("results: ~p~n ~p~n", [LogFilename, Results]),
     Xml = results_to_xml(App, Results),
     ok = file:write_file(OutputFilename, Xml).
-    
-    
 
 parse_results(Filename) ->
     {ok, RawHTML} = file:read_file(Filename),
     case mochiweb_html:parse(RawHTML) of
-	?TAG(html, [], [?TAG(head), ?TAG(body, _, TestResults)]) ->
-	    DescendPath = [<<"p">>,<<"p">>,<<"p">>,<<"p">>,<<"table">>],
-	    TestTab = follow(DescendPath, TestResults),
-	    filter_tests(TestTab);
-	_ ->
+	{<<"html">>, _, Doc} ->
+		{ok, Rows} = find([<<"body">>, <<"table">>, <<"tbody">>], Doc),
+	    filter_tests(Rows);
+	Res ->
+		io:format("ppp: ~p~n", [Res]),
 	    error(unsupported_html, Filename)
     end.
 
@@ -98,10 +97,18 @@ results_to_xml(App, Results) ->
 	       ]),
     Testcases = [xmlify_result(R) || R <- Results],
     XmlFooter = "</testsuite>",
-    
+
     [XmlHdr, Testcases, XmlFooter].
-	    
-    
+
+find([], Doc) ->
+	{ok, Doc};
+find([Elem | Path], Doc) ->
+	case lists:keyfind(Elem, 1, Doc) of
+		{Elem, _, Inner} ->
+			find(Path, Inner);
+		false ->
+			{error, notfound}
+	end.
 
 %%%===================================================================
 %%% Internal functions
@@ -118,13 +125,6 @@ xmlify_result(#res{error = Error, suite = Suite, case_id = Case,
 		  " </testcase>~n",
 		  [Suite,Case,Id,D,Error]).
 
-
-follow([], HTML) ->
-    HTML;
-follow([Key | Rest], HTML) ->
-    {value, {Key, _, Childs}} = lists:keysearch(Key, 1, HTML),
-    follow(Rest, Childs).
-
 filter_tests(HTML) ->
     lists:reverse(lists:foldl(fun fold_row/2, [], HTML)).
 
@@ -138,35 +138,31 @@ fold_row(Row, Result) ->
 
 parse_row(Row) ->
     case Row of
-	?TAG(tr, _,
-	     [
-	      ?TAG(td, [?TAG(font, _, [TestNum])]),
-	      ?TAG(td, [?TAG(font, _, [Suite])]),
-	      ?TAG(td, [{_, _, [Case]}]),
-	      ?TAG(td), %% log
-	      ?TAG(td, [?TAG(font, _, [Time])]),
-	      ?TAG(td, [?TAG(font, _, [RawResult])]),
-	      ?TAG(td, RawError)
-	     ]) ->
-	    Error = iolist_to_binary(error_to_text(RawError)),
-	    Duration = parse_duration(Time),
-	    Result = to_result(RawResult),
-	    {res, TestNum, Suite, Case, Duration, Result, Error};
-	?TAG(tr, _,
-	     [
-	      ?TAG(td, [?TAG(font, _, [TestNum])]),
-	      ?TAG(td, [?TAG(font, _, [Suite])]),
-	      ?TAG(td, [{_, _, [Case]}]),
-	      ?TAG(td), %% log
-	      ?TAG(td, [?TAG(font, _, [Time])]),
-	      ?TAG(td, [?TAG(font, _, [<<"Ok">>])])
-	     ]) ->	
-	    {res, TestNum, Suite, Case, parse_duration(Time),
-	     ok, <<>>};
+		{<<"tr">>, _, [
+		  {<<"td">>, _, [{_, _, [TestNum]}]}
+		, {<<"td">>, _, [{_, _, [Suite]}]}
+		, {<<"td">>, _, [{_, _, [_Group]}]}
+		, {<<"td">>, _, [{_, _, [Case]}]}
+		, {<<"td">>, _, [{_, _, [_Log]}]}
+		, {<<"td">>, _, [{_, _, [Time]}]}
+		, {<<"td">>, _, [{_, _, [RawResult]}]}
+		| Info
+		]} ->
+			io:format("num: ~p~nsuite: ~p~ncase: ~p~ntime: ~p~nraw: ~p~ninfo: ~p~n"
+				, [TestNum, Suite, Case, Time, RawResult, Info]),
+			case RawResult of
+				<<"Ok">> ->
+					{res, TestNum, Suite, Case, parse_duration(Time)};
+				RawResult ->
+					Error = iolist_to_binary(error_to_text(Info)),
+					Duration = parse_duration(Time),
+					Result = to_result(RawResult),
+					{res, TestNum, Suite, Case, Duration, Result, Error}
+			end;
 	_ ->
 	    false
     end.
-	
+
 to_result(<<"SKIPPED">>) ->
     skipped;
 to_result(<<"FAILED">>) ->
