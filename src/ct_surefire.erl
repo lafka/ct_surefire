@@ -75,7 +75,7 @@ write_report(ReportDir, App, OutputFilename) ->
 
 parse_results(Filename) ->
     {ok, RawHTML} = file:read_file(Filename),
-    case mochiweb_html:parse(RawHTML) of
+    case ct_surefire_html:parse(RawHTML) of
 	{<<"html">>, _, Doc} ->
 		{ok, Rows} = find([<<"body">>, <<"table">>, <<"tbody">>], Doc),
 	    filter_tests(Rows);
